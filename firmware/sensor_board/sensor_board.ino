@@ -1,6 +1,6 @@
 // Sensor board (ESP8266): VEML7700 lux sensor + 2x VL53L0X laser distance sensors.
 // Reads the sensors every second and posts them to the FastAPI backend, plus a
-// light/heavy vehicle classification. Original version as used in the demo.
+// light/heavy vehicle classification (sent once per vehicle).
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include "Arduino.h"
@@ -24,6 +24,9 @@ DFRobot_VEML7700 sensor_luz;
 WiFiClient client;
 
 bool has_vehicle = false;
+
+const float LUX_EMPTY_THRESHOLD = 100.0;  // above this, nothing is covering the lux sensor
+const float DIST_COVERED_MM = 60.0;       // a distance sensor reading below this is covered
 
 void setup() {
   pinMode(D5, OUTPUT);
@@ -132,23 +135,21 @@ void loop() {
 
     http_vehi.addHeader("Content-Type", "application/json");
 
-    int httpCode_vehi;
-    if (luz > 100.)
+    int httpCode_vehi = 0;  // 0 = nothing sent this cycle
+    if (luz > LUX_EMPTY_THRESHOLD) {
+      // Platform uncovered: clear the state (only once, not every second).
+      if (has_vehicle) httpCode_vehi = http_vehi.POST(NONE);
       has_vehicle = false;
-      httpCode_vehi = http_vehi.POST(NONE);
-    if (distancia1 < 60. && distancia2 < 60.) {
-      // pesado
-      if (has_vehicle = false) httpCode_vehi = http_vehi.POST(HEAVY);
-
-      has_vehicle = true;
-    } else {
-      // ligero
-      if (has_vehicle = false) httpCode_vehi = http_vehi.POST(LIGHT);
-
+    } else if (!has_vehicle) {
+      // Lux dropped: a vehicle is on the platform. Classify it once.
+      bool heavy = distancia1 < DIST_COVERED_MM && distancia2 < DIST_COVERED_MM;
+      httpCode_vehi = http_vehi.POST(heavy ? HEAVY : LIGHT);
       has_vehicle = true;
     }
-    
-    if (httpCode_vehi > 0) {
+
+    if (httpCode_vehi == 0) {
+      // nothing to report
+    } else if (httpCode_vehi > 0) {
       Serial.println("Datos actualizados. Código HTTP: " + String(httpCode_vehi));
     } else {
       Serial.println("Error enviando datos: " + http_vehi.errorToString(httpCode_vehi));
