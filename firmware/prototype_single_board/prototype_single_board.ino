@@ -1,6 +1,9 @@
-// Sensor board (ESP8266): VEML7700 lux sensor + 2x VL53L0X laser distance sensors.
-// Reads the sensors every second and posts them to the FastAPI backend, plus a
-// light/heavy vehicle classification (sent once per vehicle).
+// EARLY PROTOTYPE (superseded): one ESP8266 with the lux sensor and BOTH VL53L0X
+// distance sensors, classifying on the board itself. Two VL53L0X share one I2C
+// address, so XSHUT pins (D5/D6) were used to give them 0x30 / 0x31.
+// The final design moved one distance sensor to the actuator board and the
+// classification to the backend - see ../sensor_board and ../actuator_board.
+// Kept as-is for the record; it has two known bugs, noted below.
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include "Arduino.h"
@@ -8,10 +11,10 @@
 #include "DFRobot_VL53L0X.h"
 #include "DFRobot_VEML7700.h"
 #include <Adafruit_Sensor.h>
-#include "secrets.h"   // STASSID, STAPSK, BACKEND_HOST (see secrets.example.h)
+#include "secrets.h"   // STASSID, STAPSK, BACKEND_HOST (copy secrets.example.h)
 
-const String DATA_API_URL = String(BACKEND_HOST) + "/datos";
-const String VEHICLE_API_URL = String(BACKEND_HOST) + "/vehiculo";
+const char* DATA_API_URL = BACKEND_HOST "/datos";
+const char* VEHICLE_API_URL = BACKEND_HOST "/vehiculo";
 
 const char* HEAVY = "{\"vehiculo\": \"pesado\"}";
 const char* LIGHT = "{\"vehiculo\": \"vehiculo\"}";
@@ -25,17 +28,13 @@ WiFiClient client;
 
 bool has_vehicle = false;
 
-const float LUX_EMPTY_THRESHOLD = 100.0;  // above this, nothing is covering the lux sensor
-const float DIST_COVERED_MM = 60.0;       // a distance sensor reading below this is covered
-
 void setup() {
   pinMode(D5, OUTPUT);
   pinMode(D6, OUTPUT);
-  
+
   Wire.begin();
 
-  // Both VL53L0X boot at the same I2C address: hold one in reset (XSHUT),
-  // re-address the other, then release and address the second one.
+  // Indexar ambos distancias (XSHUT re-addressing)
   digitalWrite(D5, HIGH);
   digitalWrite(D6, LOW);
   delay(500);
@@ -105,7 +104,7 @@ void loop() {
     // Send sensor data
     HTTPClient http_data;
     http_data.begin(client, DATA_API_URL);
-    
+
 
     http_data.addHeader("Content-Type", "application/json");
 
@@ -119,42 +118,47 @@ void loop() {
     jsonBody += "}";
 
     int httpCode_data = http_data.POST(jsonBody);
-    
+
     if (httpCode_data > 0) {
       Serial.println("Datos actualizados. Código HTTP: " + String(httpCode_data));
     } else {
       Serial.println("Error enviando datos: " + http_data.errorToString(httpCode_data));
     }
-    
+
     http_data.end();
 
     // SEND VEHICLE DATA
     HTTPClient http_vehi;
     http_vehi.begin(client, VEHICLE_API_URL);
-    
+
 
     http_vehi.addHeader("Content-Type", "application/json");
 
-    int httpCode_vehi = 0;  // 0 = nothing sent this cycle
-    if (luz > LUX_EMPTY_THRESHOLD) {
-      // Platform uncovered: clear the state (only once, not every second).
-      if (has_vehicle) httpCode_vehi = http_vehi.POST(NONE);
+    // Known bugs in this prototype (fixed by moving classification to the backend):
+    //  1. the first `if` has no braces, so POST(NONE) runs on every loop;
+    //  2. `has_vehicle = false` assigns instead of comparing, so HEAVY/LIGHT are never sent.
+    int httpCode_vehi;
+    if (luz > 100.)
       has_vehicle = false;
-    } else if (!has_vehicle) {
-      // Lux dropped: a vehicle is on the platform. Classify it once.
-      bool heavy = distancia1 < DIST_COVERED_MM && distancia2 < DIST_COVERED_MM;
-      httpCode_vehi = http_vehi.POST(heavy ? HEAVY : LIGHT);
+      httpCode_vehi = http_vehi.POST(NONE);
+    if (distancia1 < 60. && distancia2 < 60.) {
+      // pesado
+      if (has_vehicle = false) httpCode_vehi = http_vehi.POST(HEAVY);
+
+      has_vehicle = true;
+    } else {
+      // ligero
+      if (has_vehicle = false) httpCode_vehi = http_vehi.POST(LIGHT);
+
       has_vehicle = true;
     }
 
-    if (httpCode_vehi == 0) {
-      // nothing to report
-    } else if (httpCode_vehi > 0) {
+    if (httpCode_vehi > 0) {
       Serial.println("Datos actualizados. Código HTTP: " + String(httpCode_vehi));
     } else {
       Serial.println("Error enviando datos: " + http_vehi.errorToString(httpCode_vehi));
     }
-    
+
     http_vehi.end();
   } else {
     Serial.println("Error: WiFi desconectado");

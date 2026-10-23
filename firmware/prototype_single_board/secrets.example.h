@@ -1,4 +1,4 @@
-// Copy this file to secrets.h and fill in your own values (secrets.h is git-ignored).
+// Copy to secrets.h (git-ignored) and fill in your own values.
 #pragma once
 #define STASSID "your-wifi-ssid"
 #define STAPSK  "your-wifi-password"
